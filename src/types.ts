@@ -14,7 +14,7 @@ export type PermissionModeType =
 
 // Session state structure
 export interface SessionState {
-  pendingPrompt: AsyncIterableIterator<any> | null;
+  pendingPrompt: AsyncIterableIterator<unknown> | null;
   abortController: AbortController | null;
   claudeSessionId?: string;
   permissionMode: PermissionModeType;
@@ -176,7 +176,7 @@ export function mapToolKind(toolName: string): ACPToolKind {
 }
 
 // Helper: Check if message has Claude session ID
-export function hasSessionId(message: any): message is { session_id: string } {
+export function hasSessionId(message: unknown): message is { session_id: string } {
   return (
     typeof message === "object" &&
     message !== null &&

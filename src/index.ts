@@ -96,6 +96,7 @@ function setupProcessHandlers(): void {
   });
 
   // Prevent accidental stdout writes
+  // eslint-disable-next-line no-console
   console.log = (...args: unknown[]) => {
     logger.warn("Intercepted console.log call (stdout is reserved for ACP protocol)", args);
     // In case we need to debug something critical, still allow stderr output

@@ -159,6 +159,9 @@ export class ZedClaudeAgent implements Agent {
     
     // Cancel any ongoing prompt
     this.cancelCurrentPrompt(session);
+
+    // Send thinking message
+    await this.sendTextContent(sessionId, "🧠 **Claude is thinking...**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
     // Create new abort controller
     session.abortController = new AbortController();
@@ -181,9 +184,10 @@ export class ZedClaudeAgent implements Agent {
       }
       
       // Prepare Claude query options
-      const queryOptions: any = {
+      const queryOptions: Record<string, unknown> = {
         maxTurns: 10,
         permissionMode: session.permissionMode,
+        signal: session.abortController.signal, // Pass abort signal to SDK
       };
       
       if (session.claudeSessionId) {
@@ -191,17 +195,31 @@ export class ZedClaudeAgent implements Agent {
       }
       
       this.log("Starting Claude query", queryOptions);
-      
-      // Start Claude query
-      const messageStream = query({
-        prompt: promptText,
-        options: queryOptions,
+
+      // Set up timeout
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error("Claude query timed out after 60 seconds"));
+        }, 60000); // 60-second timeout
       });
       
-      session.pendingPrompt = messageStream as AsyncIterableIterator<SDKMessage>;
+      // Start Claude query and race against timeout
+      const processingPromise = (async () => {
+        const messageStream = query({
+          prompt: promptText,
+          options: queryOptions,
+        });
+        session.pendingPrompt = messageStream as AsyncIterableIterator<SDKMessage>;
+        await this.processMessageStream(sessionId, session, messageStream);
+      })();
+
+      await Promise.race([processingPromise, timeoutPromise]);
       
-      // Process stream
-      await this.processMessageStream(sessionId, session, messageStream);
+      // Cleanup timeout
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
       
       this.log("Prompt processing completed", {
         sessionId,
@@ -212,8 +230,17 @@ export class ZedClaudeAgent implements Agent {
       
     } catch (error) {
       this.log("Prompt processing error", { sessionId, error: String(error) });
+
+      // Abort the controller on error (e.g., timeout)
+      if (!session.abortController?.signal.aborted) {
+        session.abortController?.abort();
+      }
       
-      if (session.abortController?.signal.aborted) {
+      if (String(error).includes("timed out")) {
+        await this.sendErrorMessage(sessionId, error);
+      }
+      
+      if (session.abortController?.signal.aborted && String(error).includes("AbortError")) {
         return { stopReason: "cancelled" };
       }
       
@@ -424,7 +451,7 @@ export class ZedClaudeAgent implements Agent {
     
     // Special handling for TodoWrite
     if (content.name === "TodoWrite" && content.input?.todos) {
-      await this.sendTodoList(sessionId, content.input.todos as any[]);
+      await this.sendTodoList(sessionId, content.input.todos as Array<{ content: string; status: string }>);
     }
   }
 
@@ -435,6 +462,9 @@ export class ZedClaudeAgent implements Agent {
     const { id = "", tool_name = "", input = {} } = message;
     
     this.log("Tool use started", { toolName: tool_name, toolId: id });
+    
+    // Send start message with tool info
+    await this.sendToolStartMessage(sessionId, tool_name, input as Record<string, unknown>);
     
     await this.client.sessionUpdate({
       sessionId,
@@ -450,7 +480,7 @@ export class ZedClaudeAgent implements Agent {
     
     // Special handling for TodoWrite
     if (tool_name === "TodoWrite" && input && typeof input === "object" && "todos" in input) {
-      await this.sendTodoList(sessionId, (input as any).todos);
+      await this.sendTodoList(sessionId, (input as { todos: Array<{ content: string; status: string }> }).todos);
     }
   }
 
@@ -473,7 +503,7 @@ export class ZedClaudeAgent implements Agent {
             type: "content",
             content: {
               type: "text",
-              text: output,
+              text: `🎉 **Tool Completed Successfully**\n\n${output}`,
             },
           },
         ],
@@ -501,7 +531,7 @@ export class ZedClaudeAgent implements Agent {
             type: "content",
             content: {
               type: "text",
-              text: `❌ Error: ${error}`,
+              text: `💥 **Tool Error**\n\n⚠️ ${error}`,
             },
           },
         ],
@@ -552,11 +582,22 @@ export class ZedClaudeAgent implements Agent {
   ): Promise<void> {
     if (!Array.isArray(todos)) return;
     
-    let todoText = "\n📝 Todo List:\n";
+    const completedCount = todos.filter(t => t.status === 'completed').length;
+    const inProgressCount = todos.filter(t => t.status === 'in_progress').length;
+    const pendingCount = todos.filter(t => t.status === 'pending').length;
+    
+    let todoText = `\n╭─ 📋 **Task Progress** (${completedCount}/${todos.length} completed)\n`;
+    
     todos.forEach((todo, index) => {
-      const statusEmoji = this.getStatusEmoji(todo.status);
-      todoText += `  ${index + 1}. ${statusEmoji} ${todo.content}\n`;
+      const { emoji, indicator } = this.getStatusDisplay(todo.status);
+      const prefix = index === todos.length - 1 ? '╰─' : '├─';
+      todoText += `${prefix} ${emoji} ${indicator} ${todo.content}\n`;
     });
+    
+    // Add progress summary
+    if (todos.length > 0) {
+      todoText += `\n📊 **Summary:** ${completedCount} ✅ | ${inProgressCount} 🔄 | ${pendingCount} ⏳\n`;
+    }
     
     await this.sendTextContent(sessionId, todoText);
   }
@@ -564,17 +605,88 @@ export class ZedClaudeAgent implements Agent {
   /**
    * Get emoji for todo status
    */
-  private getStatusEmoji(status: string): string {
+  private getStatusDisplay(status: string): { emoji: string; indicator: string } {
     switch (status) {
       case "completed":
-        return "✅";
+        return { emoji: "✅", indicator: "[DONE]" };
       case "in_progress":
-        return "🔄";
+        return { emoji: "🔄", indicator: "[WORK]" };
       case "pending":
-        return "⏳";
+        return { emoji: "⏳", indicator: "[TODO]" };
       default:
-        return "📋";
+        return { emoji: "📋", indicator: "[????]" };
     }
+  }
+
+  /**
+   * Send tool start message with progress indication
+   */
+  private async sendToolStartMessage(
+    sessionId: string, 
+    toolName: string, 
+    input: Record<string, unknown>
+  ): Promise<void> {
+    const toolEmoji = this.getToolEmoji(toolName);
+    const description = this.getToolDescription(toolName, input);
+    
+    await this.sendTextContent(
+      sessionId, 
+      `${toolEmoji} **${toolName}** 시작 중...\n├─ ${description}\n└─ 실행 중 🔄`
+    );
+  }
+
+  /**
+   * Get appropriate emoji for tool
+   */
+  private getToolEmoji(toolName: string): string {
+    const lowerName = toolName.toLowerCase();
+    
+    if (lowerName.includes('read') || lowerName.includes('view')) return '📖';
+    if (lowerName.includes('write') || lowerName.includes('create')) return '✏️';
+    if (lowerName.includes('edit') || lowerName.includes('update')) return '📝';
+    if (lowerName.includes('delete') || lowerName.includes('remove')) return '🗑️';
+    if (lowerName.includes('search') || lowerName.includes('find') || lowerName.includes('grep')) return '🔍';
+    if (lowerName.includes('bash') || lowerName.includes('run') || lowerName.includes('execute')) return '⚡';
+    if (lowerName.includes('todo')) return '📋';
+    if (lowerName.includes('fetch') || lowerName.includes('web')) return '🌐';
+    if (lowerName.includes('glob')) return '🗂️';
+    
+    return '🔧';
+  }
+
+  /**
+   * Get human-readable description for tool
+   */
+  private getToolDescription(toolName: string, input: Record<string, unknown>): string {
+    const lowerName = toolName.toLowerCase();
+    
+    if (lowerName.includes('read')) {
+      return `파일 읽는 중: ${input.file_path || '파일'}`;
+    }
+    if (lowerName.includes('write')) {
+      return `파일 작성 중: ${input.file_path || '파일'}`;
+    }
+    if (lowerName.includes('edit')) {
+      return `파일 편집 중: ${input.file_path || '파일'}`;
+    }
+    if (lowerName.includes('bash')) {
+      const cmd = String(input.command || '').substring(0, 50);
+      return `명령 실행 중: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
+    }
+    if (lowerName.includes('search') || lowerName.includes('grep')) {
+      return `검색 중: "${input.pattern || input.query || '패턴'}"`;
+    }
+    if (lowerName.includes('glob')) {
+      return `파일 찾는 중: ${input.pattern || '패턴'}`;
+    }
+    if (lowerName.includes('todo')) {
+      return '할 일 목록 업데이트 중';
+    }
+    if (lowerName.includes('fetch') || lowerName.includes('web')) {
+      return `웹 페이지 가져오는 중: ${input.url || 'URL'}`;
+    }
+    
+    return `도구 실행 중`;
   }
 
   /**
@@ -589,7 +701,7 @@ export class ZedClaudeAgent implements Agent {
         sessionUpdate: "agent_message_chunk",
         content: {
           type: "text",
-          text: `❌ Error: ${errorMessage}`,
+          text: `🚨 **System Error**\n\n${errorMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
         },
       },
     });

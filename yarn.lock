@@ -278,7 +278,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@eslint/js@npm:9.34.0":
+"@eslint/js@npm:9.34.0, @eslint/js@npm:^9.17.0":
   version: 9.34.0
   resolution: "@eslint/js@npm:9.34.0"
   checksum: 10c0/53f1bfd2a374683d9382a6850354555f6e89a88416c34a5d34e9fbbaf717e97c2b06300e8f93e5eddba8bda8951ccab7f93a680e56ded1a3d21d526019e69bab
@@ -2279,6 +2279,7 @@ __metadata:
   resolution: "zed-claude-acp@workspace:."
   dependencies:
     "@anthropic-ai/claude-code": "npm:latest"
+    "@eslint/js": "npm:^9.17.0"
     "@types/node": "npm:^20.12.12"
     "@typescript-eslint/eslint-plugin": "npm:^8.20.0"
     "@typescript-eslint/parser": "npm:^8.20.0"

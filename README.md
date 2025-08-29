@@ -14,7 +14,13 @@ A Yarn-based ACP (Agent Client Protocol) server that bridges Zed External Agents
 
 ## Installation
 
-### Using Yarn (Recommended)
+The server automatically detects your preferred package manager based on your project's lock files:
+- If `yarn.lock` exists → uses Yarn
+- If `package-lock.json` exists → uses npm  
+- If `.yarnrc.yml` exists → uses Yarn
+- Default fallback → Yarn
+
+### Using Yarn
 
 ```bash
 yarn dlx zed-claude-acp
@@ -48,10 +54,11 @@ This will store your authentication in `~/.claude/config.json`. The server autom
 
 ## Configuration in Zed
 
-Add to your Zed `settings.json`:
+Add to your Zed `settings.json`. The server works with both Yarn and npm:
 
-### Basic Configuration (Yarn)
+### Basic Configuration
 
+**Using Yarn:**
 ```json
 {
   "agent_servers": {
@@ -63,10 +70,23 @@ Add to your Zed `settings.json`:
 }
 ```
 
-### With Permission Mode (Recommended)
+**Using npm:**
+```json
+{
+  "agent_servers": {
+    "claude-code": {
+      "command": "npx",
+      "args": ["--yes", "zed-claude-acp"]
+    }
+  }
+}
+```
 
-To auto-accept file edits for better workflow:
+### Recommended Configuration
 
+With auto-accept edits for better workflow:
+
+**Using Yarn:**
 ```json
 {
   "agent_servers": {
@@ -81,10 +101,26 @@ To auto-accept file edits for better workflow:
 }
 ```
 
+**Using npm:**
+```json
+{
+  "agent_servers": {
+    "claude-code": {
+      "command": "npx",
+      "args": ["--yes", "zed-claude-acp"],
+      "env": {
+        "ACP_PERMISSION_MODE": "acceptEdits"
+      }
+    }
+  }
+}
+```
+
 ### With Debug Logging
 
 For troubleshooting:
 
+**Using Yarn:**
 ```json
 {
   "agent_servers": {
@@ -100,18 +136,16 @@ For troubleshooting:
 }
 ```
 
-### Using npm
-
-If you prefer npm:
-
+**Using npm:**
 ```json
 {
   "agent_servers": {
     "claude-code": {
       "command": "npx",
-      "args": ["zed-claude-acp"],
+      "args": ["--yes", "zed-claude-acp"],
       "env": {
-        "ACP_PERMISSION_MODE": "acceptEdits"
+        "ACP_PERMISSION_MODE": "acceptEdits",
+        "ACP_DEBUG": "true"
       }
     }
   }
@@ -165,10 +199,11 @@ Key design principles:
 ### Prerequisites
 
 - Node.js 18 or higher
-- Yarn package manager
+- Yarn or npm package manager
 
 ### Building from Source
 
+**Using Yarn:**
 ```bash
 # Install dependencies
 yarn install
@@ -187,6 +222,27 @@ yarn format
 
 # Lint code
 yarn lint
+```
+
+**Using npm:**
+```bash
+# Install dependencies
+npm install
+
+# Type checking
+npm run typecheck
+
+# Build the project
+npm run build
+
+# Run in development mode
+npm run dev
+
+# Format code
+npm run format
+
+# Lint code
+npm run lint
 ```
 
 ### Project Structure

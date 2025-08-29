@@ -20,6 +20,10 @@ export default [
         process: "readonly",
         Buffer: "readonly",
         crypto: "readonly",
+        AbortController: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        NodeJS: "readonly",
       },
     },
     plugins: {
