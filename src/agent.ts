@@ -40,15 +40,41 @@ export class ZedClaudeAgent implements Agent {
   private readonly sessions: Map<string, SessionState> = new Map();
   private readonly debugMode: boolean;
   private readonly defaultPermissionMode: PermissionModeType;
+  private readonly locale: 'ko' | 'en';
+  private readonly showThinking: boolean;
+  private readonly timeoutMs: number;
+  private readonly enableBypass: boolean;
+  private readonly textBuffers: Map<string, { buf: string; timer: NodeJS.Timeout | null }> = new Map();
+  private readonly textBufferMs: number;
+  private readonly maxToolOutputBytes: number;
+  private readonly sessionTtlMs: number;
+  private gcTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly client: Client) {
     this.debugMode = process.env.ACP_DEBUG === "true";
     this.defaultPermissionMode = parsePermissionMode(process.env.ACP_PERMISSION_MODE);
+    this.locale = this.parseLocale(process.env.ACP_LANG || process.env.ACP_LOCALE);
+    this.showThinking = (process.env.ACP_THINKING_MESSAGE ?? 'true') === 'true';
+    this.timeoutMs = this.parseTimeout(process.env.ACP_TIMEOUT_MS);
+    this.enableBypass = (process.env.ACP_ENABLE_BYPASS ?? 'true') === 'true';
+    this.textBufferMs = this.parseNumber(process.env.ACP_TEXT_BUFFER_MS, 60, 0, 1000);
+    this.maxToolOutputBytes = this.parseNumber(process.env.ACP_MAX_TOOL_OUTPUT_BYTES, 16 * 1024, 1024, 512 * 1024);
+    this.sessionTtlMs = this.parseNumber(process.env.ACP_SESSION_TTL_MS, 30 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
     
     this.log("Agent initialized", {
       debugMode: this.debugMode,
       defaultPermissionMode: this.defaultPermissionMode,
+      locale: this.locale,
+      showThinking: this.showThinking,
+      timeoutMs: this.timeoutMs,
+      enableBypass: this.enableBypass,
+      textBufferMs: this.textBufferMs,
+      maxToolOutputBytes: this.maxToolOutputBytes,
+      sessionTtlMs: this.sessionTtlMs,
     });
+
+    // Start session GC timer
+    this.startSessionGc();
   }
 
   /**
@@ -160,8 +186,10 @@ export class ZedClaudeAgent implements Agent {
     // Cancel any ongoing prompt
     this.cancelCurrentPrompt(session);
 
-    // Send thinking message
-    await this.sendTextContent(sessionId, "🧠 **Claude is thinking...**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    // Send thinking message (optional)
+    if (this.showThinking) {
+      await this.sendTextContent(sessionId, this.t('thinking'));
+    }
     
     // Create new abort controller
     session.abortController = new AbortController();
@@ -179,8 +207,14 @@ export class ZedClaudeAgent implements Agent {
       // Check for permission mode switching
       const newMode = detectPermissionMode(promptText);
       if (newMode) {
-        session.permissionMode = newMode;
-        this.log("Permission mode updated", { newMode });
+        if (newMode === 'bypassPermissions' && !this.enableBypass) {
+          // Gate bypass mode for safety
+          await this.sendTextContent(sessionId, this.t('bypass_blocked'));
+        } else {
+          session.permissionMode = newMode;
+          this.log("Permission mode updated", { newMode });
+          await this.sendTextContent(sessionId, this.t('mode_switched', { mode: newMode }));
+        }
       }
       
       // Prepare Claude query options
@@ -196,12 +230,12 @@ export class ZedClaudeAgent implements Agent {
       
       this.log("Starting Claude query", queryOptions);
 
-      // Set up timeout
+      // Set up configurable timeout
       let timeoutHandle: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise((_, reject) => {
         timeoutHandle = setTimeout(() => {
-          reject(new Error("Claude query timed out after 60 seconds"));
-        }, 60000); // 60-second timeout
+          reject(new TimeoutError(`Timed out after ${this.timeoutMs} ms`));
+        }, this.timeoutMs);
       });
       
       // Start Claude query and race against timeout
@@ -236,11 +270,11 @@ export class ZedClaudeAgent implements Agent {
         session.abortController?.abort();
       }
       
-      if (String(error).includes("timed out")) {
+      if (error instanceof TimeoutError) {
         await this.sendErrorMessage(sessionId, error);
       }
-      
-      if (session.abortController?.signal.aborted && String(error).includes("AbortError")) {
+
+      if (session.abortController?.signal.aborted && this.isAbortError(error)) {
         return { stopReason: "cancelled" };
       }
       
@@ -319,6 +353,8 @@ export class ZedClaudeAgent implements Agent {
     }
     
     this.log("Stream processing completed", { sessionId, messageCount });
+    // Flush any buffered text at the end
+    await this.flushTextBuffer(sessionId);
   }
 
   /**
@@ -492,6 +528,8 @@ export class ZedClaudeAgent implements Agent {
     
     this.log("Tool use completed", { toolId: id });
     
+    const safe = this.truncateLargeText(String(output ?? ""), this.maxToolOutputBytes);
+
     await this.client.sessionUpdate({
       sessionId,
       update: {
@@ -503,11 +541,11 @@ export class ZedClaudeAgent implements Agent {
             type: "content",
             content: {
               type: "text",
-              text: `🎉 **Tool Completed Successfully**\n\n${output}`,
+              text: this.t('tool_completed', { output: safe }),
             },
           },
         ],
-        rawOutput: output ? { output } : undefined,
+        rawOutput: output ? { output: safe } : undefined,
       },
     });
   }
@@ -520,6 +558,8 @@ export class ZedClaudeAgent implements Agent {
     
     this.log("Tool use failed", { toolId: id, error });
     
+    const safe = this.truncateLargeText(String(error ?? "Unknown error"), this.maxToolOutputBytes);
+
     await this.client.sessionUpdate({
       sessionId,
       update: {
@@ -531,11 +571,11 @@ export class ZedClaudeAgent implements Agent {
             type: "content",
             content: {
               type: "text",
-              text: `💥 **Tool Error**\n\n⚠️ ${error}`,
+              text: this.t('tool_error', { error: safe }),
             },
           },
         ],
-        rawOutput: { error },
+        rawOutput: { error: safe },
       },
     });
   }
@@ -560,17 +600,7 @@ export class ZedClaudeAgent implements Agent {
    */
   private async sendTextContent(sessionId: string, text: string): Promise<void> {
     if (!text) return;
-    
-    await this.client.sessionUpdate({
-      sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        content: {
-          type: "text",
-          text,
-        },
-      },
-    });
+    this.bufferText(sessionId, text);
   }
 
   /**
@@ -585,8 +615,12 @@ export class ZedClaudeAgent implements Agent {
     const completedCount = todos.filter(t => t.status === 'completed').length;
     const inProgressCount = todos.filter(t => t.status === 'in_progress').length;
     const pendingCount = todos.filter(t => t.status === 'pending').length;
-    
-    let todoText = `\n╭─ 📋 **Task Progress** (${completedCount}/${todos.length} completed)\n`;
+
+    const pct = todos.length ? Math.round((completedCount / todos.length) * 100) : 0;
+    const bar = this.progressBar(pct);
+
+    let header = this.t('todo_header', { completed: String(completedCount), total: String(todos.length) });
+    let todoText = `\n${header}\n${bar}\n`;
     
     todos.forEach((todo, index) => {
       const { emoji, indicator } = this.getStatusDisplay(todo.status);
@@ -596,7 +630,7 @@ export class ZedClaudeAgent implements Agent {
     
     // Add progress summary
     if (todos.length > 0) {
-      todoText += `\n📊 **Summary:** ${completedCount} ✅ | ${inProgressCount} 🔄 | ${pendingCount} ⏳\n`;
+      todoText += `\n${this.t('todo_summary', { completed: String(completedCount), inProgress: String(inProgressCount), pending: String(pendingCount) })}\n`;
     }
     
     await this.sendTextContent(sessionId, todoText);
@@ -608,13 +642,13 @@ export class ZedClaudeAgent implements Agent {
   private getStatusDisplay(status: string): { emoji: string; indicator: string } {
     switch (status) {
       case "completed":
-        return { emoji: "✅", indicator: "[DONE]" };
+        return { emoji: "✅", indicator: this.t('todo_done') };
       case "in_progress":
-        return { emoji: "🔄", indicator: "[WORK]" };
+        return { emoji: "🛠️", indicator: this.t('todo_work') };
       case "pending":
-        return { emoji: "⏳", indicator: "[TODO]" };
+        return { emoji: "⏳", indicator: this.t('todo_todo') };
       default:
-        return { emoji: "📋", indicator: "[????]" };
+        return { emoji: "📋", indicator: this.t('todo_unknown') };
     }
   }
 
@@ -628,11 +662,8 @@ export class ZedClaudeAgent implements Agent {
   ): Promise<void> {
     const toolEmoji = this.getToolEmoji(toolName);
     const description = this.getToolDescription(toolName, input);
-    
-    await this.sendTextContent(
-      sessionId, 
-      `${toolEmoji} **${toolName}** 시작 중...\n├─ ${description}\n└─ 실행 중 🔄`
-    );
+    const body = this.t('tool_start', { tool: toolName, emoji: toolEmoji, desc: description });
+    await this.sendTextContent(sessionId, body);
   }
 
   /**
@@ -642,12 +673,12 @@ export class ZedClaudeAgent implements Agent {
     const lowerName = toolName.toLowerCase();
     
     if (lowerName.includes('read') || lowerName.includes('view')) return '📖';
-    if (lowerName.includes('write') || lowerName.includes('create')) return '✏️';
+    if (lowerName.includes('write') || lowerName.includes('create')) return '✍️';
     if (lowerName.includes('edit') || lowerName.includes('update')) return '📝';
     if (lowerName.includes('delete') || lowerName.includes('remove')) return '🗑️';
-    if (lowerName.includes('search') || lowerName.includes('find') || lowerName.includes('grep')) return '🔍';
-    if (lowerName.includes('bash') || lowerName.includes('run') || lowerName.includes('execute')) return '⚡';
-    if (lowerName.includes('todo')) return '📋';
+    if (lowerName.includes('search') || lowerName.includes('find') || lowerName.includes('grep')) return '🔎';
+    if (lowerName.includes('bash') || lowerName.includes('run') || lowerName.includes('execute')) return '🧪';
+    if (lowerName.includes('todo')) return '✅';
     if (lowerName.includes('fetch') || lowerName.includes('web')) return '🌐';
     if (lowerName.includes('glob')) return '🗂️';
     
@@ -661,32 +692,32 @@ export class ZedClaudeAgent implements Agent {
     const lowerName = toolName.toLowerCase();
     
     if (lowerName.includes('read')) {
-      return `파일 읽는 중: ${input.file_path || '파일'}`;
+      return this.t('desc_read', { file: String((input as any).file_path ?? 'file') });
     }
     if (lowerName.includes('write')) {
-      return `파일 작성 중: ${input.file_path || '파일'}`;
+      return this.t('desc_write', { file: String((input as any).file_path ?? 'file') });
     }
     if (lowerName.includes('edit')) {
-      return `파일 편집 중: ${input.file_path || '파일'}`;
+      return this.t('desc_edit', { file: String((input as any).file_path ?? 'file') });
     }
     if (lowerName.includes('bash')) {
       const cmd = String(input.command || '').substring(0, 50);
-      return `명령 실행 중: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
+      return this.t('desc_bash', { cmd: `${cmd}${cmd.length >= 50 ? '...' : ''}` });
     }
     if (lowerName.includes('search') || lowerName.includes('grep')) {
-      return `검색 중: "${input.pattern || input.query || '패턴'}"`;
+      return this.t('desc_search', { q: String((input as any).pattern ?? (input as any).query ?? 'pattern') });
     }
     if (lowerName.includes('glob')) {
-      return `파일 찾는 중: ${input.pattern || '패턴'}`;
+      return this.t('desc_glob', { q: String((input as any).pattern ?? 'pattern') });
     }
     if (lowerName.includes('todo')) {
-      return '할 일 목록 업데이트 중';
+      return this.t('desc_todo');
     }
     if (lowerName.includes('fetch') || lowerName.includes('web')) {
-      return `웹 페이지 가져오는 중: ${input.url || 'URL'}`;
+      return this.t('desc_fetch', { url: String((input as any).url ?? 'URL') });
     }
     
-    return `도구 실행 중`;
+    return this.t('desc_generic');
   }
 
   /**
@@ -694,6 +725,7 @@ export class ZedClaudeAgent implements Agent {
    */
   private async sendErrorMessage(sessionId: string, error: unknown): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const safe = this.truncateLargeText(errorMessage, this.maxToolOutputBytes);
     
     await this.client.sessionUpdate({
       sessionId,
@@ -701,9 +733,176 @@ export class ZedClaudeAgent implements Agent {
         sessionUpdate: "agent_message_chunk",
         content: {
           type: "text",
-          text: `🚨 **System Error**\n\n${errorMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+          text: this.t('system_error', { error: safe }),
         },
       },
     });
+  }
+
+  // --- Helpers: locale, timeout, errors, i18n, progress ---
+
+  private parseLocale(input?: string): 'ko' | 'en' {
+    const v = (input || '').toLowerCase();
+    if (v.startsWith('en')) return 'en';
+    return 'ko';
+  }
+
+  private parseTimeout(input?: string): number {
+    const def = 60000;
+    if (!input) return def;
+    const n = Number(input);
+    if (!Number.isFinite(n) || n < 1000) return def;
+    return Math.min(n, 10 * 60 * 1000); // cap at 10 minutes
+    }
+
+  private parseNumber(input: string | undefined, def: number, min: number, max: number): number {
+    if (!input) return def;
+    const n = Number(input);
+    if (!Number.isFinite(n)) return def;
+    return Math.max(min, Math.min(max, Math.trunc(n)));
+  }
+
+  private isAbortError(error: unknown): boolean {
+    if (!error) return false;
+    if (error instanceof Error && error.name === 'AbortError') return true;
+    return String((error as any).message || '').toLowerCase().includes('abort');
+  }
+
+  private t(key: string, vars: Record<string, string> = {}): string {
+    const dict = this.locale === 'en' ? this.en : this.ko;
+    let s = dict[key] ?? key;
+    for (const [k, v] of Object.entries(vars)) {
+      s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), v);
+    }
+    return s;
+  }
+
+  private progressBar(pct: number): string {
+    const blocks = 10;
+    const filled = Math.round((pct / 100) * blocks);
+    const bar = '▰'.repeat(filled) + '▱'.repeat(blocks - filled);
+    return this.t('progress_bar', { bar, pct: String(pct) });
+  }
+
+  private bufferText(sessionId: string, text: string): void {
+    const entry = this.textBuffers.get(sessionId) ?? { buf: '', timer: null };
+    entry.buf += text;
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+    entry.timer = setTimeout(() => {
+      void this.flushTextBuffer(sessionId);
+    }, this.textBufferMs);
+    this.textBuffers.set(sessionId, entry);
+  }
+
+  private async flushTextBuffer(sessionId: string): Promise<void> {
+    const entry = this.textBuffers.get(sessionId);
+    if (!entry || !entry.buf) return;
+    const payload = entry.buf;
+    entry.buf = '';
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+
+    await this.client.sessionUpdate({
+      sessionId,
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: payload },
+      },
+    });
+  }
+
+  private truncateLargeText(input: string, maxBytes: number): string {
+    const bytes = Buffer.byteLength(input, 'utf8');
+    if (bytes <= maxBytes) return input;
+    let end = input.length;
+    // Trim to maxBytes boundary
+    while (Buffer.byteLength(input.slice(0, end), 'utf8') > maxBytes && end > 0) {
+      end = Math.floor(end * 0.95);
+    }
+    const kept = input.slice(0, end);
+    const truncatedBytes = bytes - Buffer.byteLength(kept, 'utf8');
+    return `${kept}\n\n… (${truncatedBytes} bytes truncated)`;
+  }
+
+  private startSessionGc(): void {
+    const intervalMs = Math.max(30 * 1000, Math.floor(this.sessionTtlMs / 6));
+    this.gcTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, s] of this.sessions) {
+        const idle = now - s.lastActiveAt.getTime();
+        const isActive = !!s.pendingPrompt || !!s.abortController;
+        if (!isActive && idle > this.sessionTtlMs) {
+          this.log('GC: removing idle session', { sessionId: id, idleMs: idle });
+          // flush any pending text
+          void this.flushTextBuffer(id);
+          this.sessions.delete(id);
+          this.textBuffers.delete(id);
+        }
+      }
+    }, intervalMs);
+  }
+
+  // Locale dictionaries
+  private readonly ko: Record<string, string> = {
+    thinking: '🧠 생각 중…\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    bypass_blocked: '🛑 PERMISSION: BYPASS는 비활성화되어 있어 적용되지 않았어요.',
+    mode_switched: '🔐 권한 모드 전환: {mode}',
+    tool_completed: '🎉 도구 완료!\n\n{output}',
+    tool_error: '❌ 도구 오류\n\n⚠️ {error}',
+    todo_header: '╭─ 📋 작업 진행 상황 ({completed}/{total} 완료)',
+    todo_summary: '📊 요약: {completed} ✅ | {inProgress} 🛠️ | {pending} ⏳',
+    todo_done: '[DONE]',
+    todo_work: '[WORK]',
+    todo_todo: '[TODO]',
+    todo_unknown: '[????]',
+    tool_start: '{emoji} {tool} 시작…\n├─ {desc}\n└─ 실행 중 ⏳',
+    desc_read: '파일 읽는 중: {file}',
+    desc_write: '파일 작성 중: {file}',
+    desc_edit: '파일 편집 중: {file}',
+    desc_bash: '명령 실행 중: {cmd}',
+    desc_search: '검색 중: "{q}"',
+    desc_glob: '파일 찾는 중: {q}',
+    desc_todo: '할 일 목록 업데이트 중',
+    desc_fetch: '웹 페이지 가져오는 중: {url}',
+    desc_generic: '도구 실행 중',
+    system_error: '🚨 시스템 오류\n\n{error}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    progress_bar: '진행률 {pct}% | {bar}',
+  };
+
+  private readonly en: Record<string, string> = {
+    thinking: '🧠 Thinking…\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    bypass_blocked: '🛑 PERMISSION: BYPASS is disabled and was ignored.',
+    mode_switched: '🔐 Permission mode switched: {mode}',
+    tool_completed: '🎉 Tool completed!\n\n{output}',
+    tool_error: '❌ Tool error\n\n⚠️ {error}',
+    todo_header: '╭─ 📋 Task Progress ({completed}/{total} completed)',
+    todo_summary: '📊 Summary: {completed} ✅ | {inProgress} 🛠️ | {pending} ⏳',
+    todo_done: '[DONE]',
+    todo_work: '[WORK]',
+    todo_todo: '[TODO]',
+    todo_unknown: '[????]',
+    tool_start: '{emoji} Starting {tool}…\n├─ {desc}\n└─ Running ⏳',
+    desc_read: 'Reading file: {file}',
+    desc_write: 'Writing file: {file}',
+    desc_edit: 'Editing file: {file}',
+    desc_bash: 'Executing command: {cmd}',
+    desc_search: 'Searching for "{q}"',
+    desc_glob: 'Globbing files: {q}',
+    desc_todo: 'Updating TODO list',
+    desc_fetch: 'Fetching web page: {url}',
+    desc_generic: 'Running tool',
+    system_error: '🚨 System Error\n\n{error}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    progress_bar: 'Progress {pct}% | {bar}',
+  };
+}
+
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TimeoutError';
   }
 }

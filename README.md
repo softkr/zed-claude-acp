@@ -170,6 +170,8 @@ You can change permission modes during a conversation by including special marke
 - `[ACP:PERMISSION:DEFAULT]` - Switch back to default mode
 - `[ACP:PERMISSION:PLAN]` - Switch to plan mode
 
+Note: When `ACP_ENABLE_BYPASS=false`, the BYPASS marker is ignored for safety, and the agent will notify you.
+
 Example:
 ```
 [ACP:PERMISSION:ACCEPT_EDITS]
@@ -181,6 +183,13 @@ Please update all TypeScript files to use the new API
 - `ACP_DEBUG` - Set to `"true"` to enable debug logging to stderr
 - `ACP_PERMISSION_MODE` - Set default permission mode (`default`, `acceptEdits`, `bypassPermissions`, `plan`)
 - `ACP_ALLOW_CONSOLE_LOG` - Set to `"true"` to allow console.log output to stderr (debugging only)
+- `ACP_TIMEOUT_MS` - Max time per Claude query in ms (default: 60000)
+- `ACP_THINKING_MESSAGE` - Set to `"false"` to hide the initial thinking banner
+- `ACP_LANG` / `ACP_LOCALE` - UI language for agent messages (`en`, `ko`; default: `ko`)
+- `ACP_ENABLE_BYPASS` - Allow permission bypass switching (default: `true`; set `false` to ignore `[ACP:PERMISSION:BYPASS]`)
+- `ACP_TEXT_BUFFER_MS` - Buffering window for streaming text chunks (default: 60)
+- `ACP_MAX_TOOL_OUTPUT_BYTES` - Truncate oversized tool outputs/errors to this many bytes (default: 16384)
+- `ACP_SESSION_TTL_MS` - Idle session TTL before GC removal (default: 1800000)
 
 ## Architecture
 
@@ -274,6 +283,12 @@ Debug logs are written to stderr and include:
 - Tool call execution
 - Claude SDK interactions
 - Stream processing events
+
+## Localization and UX
+
+- Set `ACP_LANG=en` for English or omit for Korean defaults.
+- The agent uses clearer, lively emojis for tool start/completion/errors and TODO progress.
+- Hide the “thinking” preface with `ACP_THINKING_MESSAGE=false`.
 
 ## Safety
 
