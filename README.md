@@ -57,7 +57,7 @@ Add to your Zed `settings.json`:
   "agent_servers": {
     "claude-code": {
       "command": "yarn",
-      "args": ["dlx", "zed-claude-acp-server"]
+      "args": ["dlx", "zed-claude-acp"]
     }
   }
 }
@@ -72,7 +72,7 @@ To auto-accept file edits for better workflow:
   "agent_servers": {
     "claude-code": {
       "command": "yarn",
-      "args": ["dlx", "zed-claude-acp-server"],
+      "args": ["dlx", "zed-claude-acp"],
       "env": {
         "ACP_PERMISSION_MODE": "acceptEdits"
       }
@@ -90,7 +90,7 @@ For troubleshooting:
   "agent_servers": {
     "claude-code": {
       "command": "yarn",
-      "args": ["dlx", "zed-claude-acp-server"],
+      "args": ["dlx", "zed-claude-acp"],
       "env": {
         "ACP_PERMISSION_MODE": "acceptEdits",
         "ACP_DEBUG": "true"
@@ -109,7 +109,7 @@ If you prefer npm:
   "agent_servers": {
     "claude-code": {
       "command": "npx",
-      "args": ["zed-claude-acp-server"],
+      "args": ["zed-claude-acp"],
       "env": {
         "ACP_PERMISSION_MODE": "acceptEdits"
       }
