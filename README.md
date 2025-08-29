@@ -11,6 +11,10 @@ A Yarn-based ACP (Agent Client Protocol) server that bridges Zed External Agents
 - ✅ Dynamic permission mode switching
 - ✅ Debug logging to stderr (stdout reserved for protocol)
 - ✅ ESM-only, TypeScript, Node.js 18+
+- ✅ Buffered streaming to reduce update churn
+- ✅ Output size capping for large tool outputs/errors
+- ✅ Idle session GC for long-running stability
+- ✅ Localization (ko/en), lively emojis, optional thinking banner
 
 ## Installation
 
@@ -202,6 +206,7 @@ Key design principles:
 - Session persistence using Claude's native session management
 - Clean error handling without crashing the process
 - Real-time streaming for responsive interactions
+- Buffered text streaming and safe truncation of oversized outputs
 
 ## Development
 
@@ -289,6 +294,18 @@ Debug logs are written to stderr and include:
 - Set `ACP_LANG=en` for English or omit for Korean defaults.
 - The agent uses clearer, lively emojis for tool start/completion/errors and TODO progress.
 - Hide the “thinking” preface with `ACP_THINKING_MESSAGE=false`.
+
+## Changelog
+
+### v0.2.0
+
+- Locale (ko/en) + lively emoji UX
+- Configurable timeout, optional thinking banner
+- Safe permission BYPASS gating (`ACP_ENABLE_BYPASS`)
+- Buffered text streaming (`ACP_TEXT_BUFFER_MS`)
+- Tool output/error size cap (`ACP_MAX_TOOL_OUTPUT_BYTES`)
+- Idle session GC (`ACP_SESSION_TTL_MS`)
+- README updates and environment variable docs
 
 ## Safety
 
