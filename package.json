@@ -1,6 +1,6 @@
 {
   "name": "zed-claude-acp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Yarn-based ACP server that bridges Zed External Agents to Claude Code",
   "type": "module",
   "main": "dist/cli.js",
