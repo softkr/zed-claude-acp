@@ -49,6 +49,8 @@ export class ZedClaudeAgent implements Agent {
   private readonly maxToolOutputBytes: number;
   private readonly sessionTtlMs: number;
   private gcTimer: NodeJS.Timeout | null = null;
+  private readonly inactivityMs: number;
+  private readonly textBufferFlushBytes: number;
 
   constructor(private readonly client: Client) {
     this.debugMode = process.env.ACP_DEBUG === "true";
@@ -60,6 +62,8 @@ export class ZedClaudeAgent implements Agent {
     this.textBufferMs = this.parseNumber(process.env.ACP_TEXT_BUFFER_MS, 60, 0, 1000);
     this.maxToolOutputBytes = this.parseNumber(process.env.ACP_MAX_TOOL_OUTPUT_BYTES, 16 * 1024, 1024, 512 * 1024);
     this.sessionTtlMs = this.parseNumber(process.env.ACP_SESSION_TTL_MS, 30 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
+    this.inactivityMs = this.parseNumber(process.env.ACP_INACTIVITY_TIMEOUT_MS, 0, 0, 10 * 60 * 1000);
+    this.textBufferFlushBytes = this.parseNumber(process.env.ACP_TEXT_BUFFER_FLUSH_BYTES, 2048, 256, 64 * 1024);
     
     this.log("Agent initialized", {
       debugMode: this.debugMode,
@@ -71,6 +75,8 @@ export class ZedClaudeAgent implements Agent {
       textBufferMs: this.textBufferMs,
       maxToolOutputBytes: this.maxToolOutputBytes,
       sessionTtlMs: this.sessionTtlMs,
+      inactivityMs: this.inactivityMs,
+      textBufferFlushBytes: this.textBufferFlushBytes,
     });
 
     // Start session GC timer
@@ -194,6 +200,8 @@ export class ZedClaudeAgent implements Agent {
     // Create new abort controller
     session.abortController = new AbortController();
     session.lastActiveAt = new Date();
+    session.lastStreamAt = new Date();
+    this.startInactivityWatch(params.sessionId, session);
     
     try {
       // Extract text content
@@ -285,6 +293,8 @@ export class ZedClaudeAgent implements Agent {
     } finally {
       session.pendingPrompt = null;
       session.abortController = null;
+      this.stopInactivityWatch(session);
+      await this.flushTextBuffer(sessionId);
     }
   }
 
@@ -331,6 +341,7 @@ export class ZedClaudeAgent implements Agent {
     let messageCount = 0;
     
     for await (const message of messageStream) {
+      session.lastStreamAt = new Date();
       if (session.abortController?.signal.aborted) {
         this.log("Message processing aborted", { sessionId, messageCount });
         break;
@@ -794,6 +805,12 @@ export class ZedClaudeAgent implements Agent {
       void this.flushTextBuffer(sessionId);
     }, this.textBufferMs);
     this.textBuffers.set(sessionId, entry);
+
+    // Size-based immediate flush to avoid long delays with large chunks
+    const size = Buffer.byteLength(entry.buf, 'utf8');
+    if (size >= this.textBufferFlushBytes) {
+      void this.flushTextBuffer(sessionId);
+    }
   }
 
   private async flushTextBuffer(sessionId: string): Promise<void> {
@@ -844,6 +861,34 @@ export class ZedClaudeAgent implements Agent {
         }
       }
     }, intervalMs);
+  }
+
+  private startInactivityWatch(sessionId: string, session: SessionState): void {
+    if (this.inactivityMs <= 0) return;
+    this.stopInactivityWatch(session);
+    const tick = () => {
+      if (this.inactivityMs <= 0) return;
+      const last = session.lastStreamAt?.getTime() ?? Date.now();
+      const idle = Date.now() - last;
+      if (!session.abortController || session.abortController.signal.aborted) return;
+      if (idle > this.inactivityMs) {
+        this.log('Inactivity watchdog: aborting stuck query', { sessionId, idle });
+        session.abortController.abort(new Error('InactivityTimeout'));
+        this.sendErrorMessage(sessionId, new Error(this.t('system_error', { error: `Inactivity timeout (${this.inactivityMs} ms)` })) ).catch(() => {});
+        this.flushTextBuffer(sessionId).catch(() => {});
+        this.stopInactivityWatch(session);
+      } else {
+        session.inactivityTimer = setTimeout(tick, Math.max(500, Math.min(2000, this.inactivityMs / 2)));
+      }
+    };
+    session.inactivityTimer = setTimeout(tick, this.inactivityMs);
+  }
+
+  private stopInactivityWatch(session: SessionState): void {
+    if (session.inactivityTimer) {
+      clearTimeout(session.inactivityTimer);
+      session.inactivityTimer = null;
+    }
   }
 
   // Locale dictionaries

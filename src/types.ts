@@ -21,6 +21,8 @@ export interface SessionState {
   messageCount: number;
   createdAt: Date;
   lastActiveAt: Date;
+  lastStreamAt?: Date;
+  inactivityTimer?: NodeJS.Timeout | null;
 }
 
 // Claude message content blocks

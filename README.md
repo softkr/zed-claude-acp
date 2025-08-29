@@ -192,8 +192,10 @@ Please update all TypeScript files to use the new API
 - `ACP_LANG` / `ACP_LOCALE` - UI language for agent messages (`en`, `ko`; default: `ko`)
 - `ACP_ENABLE_BYPASS` - Allow permission bypass switching (default: `true`; set `false` to ignore `[ACP:PERMISSION:BYPASS]`)
 - `ACP_TEXT_BUFFER_MS` - Buffering window for streaming text chunks (default: 60)
+- `ACP_TEXT_BUFFER_FLUSH_BYTES` - Immediate flush threshold for buffered text in bytes (default: 2048)
 - `ACP_MAX_TOOL_OUTPUT_BYTES` - Truncate oversized tool outputs/errors to this many bytes (default: 16384)
 - `ACP_SESSION_TTL_MS` - Idle session TTL before GC removal (default: 1800000)
+- `ACP_INACTIVITY_TIMEOUT_MS` - Abort a stuck query if no stream activity for this many ms (default: 0, disabled)
 
 ## Architecture
 
