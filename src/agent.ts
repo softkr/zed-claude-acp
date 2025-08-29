@@ -238,15 +238,7 @@ export class ZedClaudeAgent implements Agent {
       
       this.log("Starting Claude query", queryOptions);
 
-      // Set up configurable timeout
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      const timeoutPromise = new Promise((_, reject) => {
-        timeoutHandle = setTimeout(() => {
-          reject(new TimeoutError(`Timed out after ${this.timeoutMs} ms`));
-        }, this.timeoutMs);
-      });
-      
-      // Start Claude query and race against timeout
+      // Start Claude query and process stream
       const processingPromise = (async () => {
         const messageStream = query({
           prompt: promptText,
@@ -255,13 +247,9 @@ export class ZedClaudeAgent implements Agent {
         session.pendingPrompt = messageStream as AsyncIterableIterator<SDKMessage>;
         await this.processMessageStream(sessionId, session, messageStream);
       })();
-
-      await Promise.race([processingPromise, timeoutPromise]);
       
-      // Cleanup timeout
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
+      // Await processing completion; watchdog handles inactivity
+      await processingPromise;
       
       this.log("Prompt processing completed", {
         sessionId,
@@ -278,10 +266,6 @@ export class ZedClaudeAgent implements Agent {
         session.abortController?.abort();
       }
       
-      if (error instanceof TimeoutError) {
-        await this.sendErrorMessage(sessionId, error);
-      }
-
       if (session.abortController?.signal.aborted && this.isAbortError(error)) {
         return { stopReason: "cancelled" };
       }
@@ -760,9 +744,10 @@ export class ZedClaudeAgent implements Agent {
 
   private parseTimeout(input?: string): number {
     const def = 60000;
-    if (!input) return def;
+    if (input === undefined) return def;
     const n = Number(input);
-    if (!Number.isFinite(n) || n < 1000) return def;
+    if (!Number.isFinite(n) || n < 0) return def;
+    if (n === 0) return 0; // disable hard timeout
     return Math.min(n, 10 * 60 * 1000); // cap at 10 minutes
     }
 

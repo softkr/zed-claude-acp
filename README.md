@@ -187,7 +187,7 @@ Please update all TypeScript files to use the new API
 - `ACP_DEBUG` - Set to `"true"` to enable debug logging to stderr
 - `ACP_PERMISSION_MODE` - Set default permission mode (`default`, `acceptEdits`, `bypassPermissions`, `plan`)
 - `ACP_ALLOW_CONSOLE_LOG` - Set to `"true"` to allow console.log output to stderr (debugging only)
-- `ACP_TIMEOUT_MS` - Max time per Claude query in ms (default: 60000)
+- `ACP_TIMEOUT_MS` - Hard wall-clock timeout in ms (default: 60000). Set to `0` to disable and rely on inactivity watchdog.
 - `ACP_THINKING_MESSAGE` - Set to `"false"` to hide the initial thinking banner
 - `ACP_LANG` / `ACP_LOCALE` - UI language for agent messages (`en`, `ko`; default: `ko`)
 - `ACP_ENABLE_BYPASS` - Allow permission bypass switching (default: `true`; set `false` to ignore `[ACP:PERMISSION:BYPASS]`)
