@@ -36,7 +36,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com:softkr/zed-claude-acp.git"
+    "url": "https://github.com/softkr/zed-claude-acp.git"
   },
   "publishConfig": {
     "access": "public",

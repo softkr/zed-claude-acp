@@ -1,4 +1,4 @@
-# Zed Claude ACP Server
+# Zed Claude ACP
 
 A Yarn-based ACP (Agent Client Protocol) server that bridges Zed External Agents to Claude Code SDK, enabling Claude AI capabilities directly within the Zed editor.
 
@@ -17,20 +17,20 @@ A Yarn-based ACP (Agent Client Protocol) server that bridges Zed External Agents
 ### Using Yarn (Recommended)
 
 ```bash
-yarn dlx zed-claude-acp-server
+yarn dlx zed-claude-acp
 ```
 
 ### Using npm
 
 ```bash
-npx zed-claude-acp-server
+npx zed-claude-acp
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/zed-claude-acp-server.git
-cd zed-claude-acp-server
+git clone https://github.com/softkr/zed-claude-acp.git
+cd zed-claude-acp
 yarn install
 yarn build
 node dist/cli.js
@@ -192,7 +192,7 @@ yarn lint
 ### Project Structure
 
 ```
-zed-claude-acp-server/
+zed-claude-acp/
 ├── src/
 │   ├── cli.ts      # CLI entry point
 │   ├── index.ts    # Main application bootstrap
